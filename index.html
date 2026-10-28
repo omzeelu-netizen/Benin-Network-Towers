@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1c1c1a">
+<title>Benin Towers</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.Default.css">
+<style>
+:root{--bg:#f6f5f1;--fg:#1c1c1a;--mut:#6b6a65;--card:#fff;--line:#d9d7cf;--acc:#1a5fb4}
+@media (prefers-color-scheme:dark){:root{--bg:#161614;--fg:#eceae3;--mut:#9a988f;--card:#222220;--line:#3a3935;--acc:#6aa5f0}.osm{filter:invert(1) hue-rotate(180deg) brightness(.9) contrast(.88)}}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font:15px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;display:flex;flex-direction:column;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+#top{padding:8px 10px 6px;background:var(--card);border-bottom:1px solid var(--line);z-index:5}
+h1{font-size:16px;margin:0 0 6px;display:flex;justify-content:space-between}
+h1 span{font-weight:400;color:var(--mut);font-size:13px}
+#chips{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none}
+.chip{border:1px solid var(--line);background:var(--bg);color:var(--fg);border-radius:16px;padding:4px 10px;font:inherit;font-size:13px;white-space:nowrap;cursor:pointer}
+.chip.on{background:var(--fg);color:var(--bg)}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px}
+#map{flex:1;min-height:0;z-index:1}
+#panel{background:var(--card);border-top:1px solid var(--line);max-height:46%;overflow:auto;padding:10px 12px;display:none;z-index:5}
+#panel.open{display:block}
+#nav{display:flex;background:var(--card);border-top:1px solid var(--line);z-index:6}
+#nav button{flex:1;padding:11px 4px;border:0;background:none;color:var(--mut);font:inherit;font-size:13px;cursor:pointer}
+#nav button.on{color:var(--acc);font-weight:600}
+.row{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0;align-items:center}
+select,input[type=text],textarea,.btn{font:inherit;border:1px solid var(--line);background:var(--bg);color:var(--fg);border-radius:8px;padding:7px 10px}
+input[type=text]{flex:1;min-width:120px}
+.btn{cursor:pointer}.btn.p{background:var(--acc);border-color:var(--acc);color:#fff}.btn.d{color:#c01c28}
+textarea{width:100%;height:70px;font:12px monospace}
+.mut{color:var(--mut);font-size:13px}
+.li{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line)}
+#toast{position:fixed;left:50%;bottom:calc(70px + env(safe-area-inset-bottom));transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:8px 14px;border-radius:20px;font-size:13px;z-index:999;opacity:0;transition:opacity .2s;pointer-events:none;max-width:90%;text-align:center}
+#toast.on{opacity:1}
+.leaflet-popup-content{font:13px/1.4 system-ui,sans-serif;color:#1c1c1a}
+.leaflet-popup-content button{margin-top:6px}
+.addmode #map{cursor:crosshair}
+</style>
+</head>
+<body>
+<div id="top"><h1>Benin City cell towers <span id="count"></span></h1><div id="chips"></div></div>
+<div id="map"></div>
+<div id="panel"></div>
+<div id="nav">
+<button data-p="near">Nearby</button><button id="addb">Add tower</button><button data-p="data">Data</button><button data-p="map">Map</button>
+</div>
+<div id="toast"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/leaflet.markercluster.js"></script>
+<script>
+if(typeof L==="undefined"){document.getElementById("map").innerHTML='<div style="padding:24px;line-height:1.5"><b>The map library didn’t load.</b><br>This page needs an internet connection and must be opened in a normal browser (Chrome or Safari) from a website address, not inside a file preview. See the hosting steps from Claude.</div>';throw new Error("Leaflet not loaded")}
+var NETS={MTN:"#f2b705",Airtel:"#e4002b",Glo:"#2e9e3f","9mobile":"#8a4fd0",Unknown:"#7a7a7a"};
+var MNC={20:"Airtel",30:"MTN",50:"Glo",60:"9mobile"};
+var BB={s:6.22,w:5.50,n:6.46,e:5.76};
+var KEY="benin_towers_v2",towers=[],filt="All",addMode=false,cluster=true,rings=false,me=null;
+try{towers=JSON.parse(localStorage.getItem(KEY))||[]}catch(e){}
+var $=function(i){return document.getElementById(i)};
+function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})}
+function save(){try{localStorage.setItem(KEY,JSON.stringify(towers))}catch(e){toast("Couldn’t save to this browser.")}}
+var tt;function toast(m){var t=$("toast");t.textContent=m;t.className="on";clearTimeout(tt);tt=setTimeout(function(){t.className=""},3200)}
+function km(a,b,c,d){var r=Math.PI/180,x=(d-b)*r*Math.cos((a+c)/2*r),y=(c-a)*r;return 6371*Math.sqrt(x*x+y*y)}
+function inBB(la,lo){return la>=BB.s&&la<=BB.n&&lo>=BB.w&&lo<=BB.e}
+
+/* map */
+var map=L.map("map",{zoomControl:false}).setView([6.335,5.627],12);
+L.control.zoom({position:"topright"}).addTo(map);
+var street=L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,className:"osm",attribution:"© OpenStreetMap contributors"}).addTo(map);
+var sat=L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",{maxZoom:19,attribution:"Imagery © Esri"});
+map.attributionControl.addAttribution("Towers: OpenStreetMap, OpenCellID (CC BY-SA), user data");
+L.control.locate=null;
+var grp=null,ringG=L.layerGroup().addTo(map),nearG=L.layerGroup().addTo(map);
+
+function popupHtml(t){
+return'<b><span class="dot" style="background:'+(NETS[t.net]||NETS.Unknown)+'"></span>'+esc(t.net)+"</b> "+esc(t.tech||"")+"<br>"+(t.note?esc(t.note)+"<br>":"")+(t.range?"Range ~"+esc(t.range)+" m<br>":"")+'<span style="color:#6b6a65">'+t.lat.toFixed(5)+", "+t.lon.toFixed(5)+(t.src?" · "+esc(t.src):"")+'</span><br><button data-del="'+esc(t.id)+'">Delete</button>'}
+function render(){
+if(grp)map.removeLayer(grp);ringG.clearLayers();
+grp=cluster?L.markerClusterGroup({maxClusterRadius:42,disableClusteringAtZoom:16}):L.layerGroup();
+var n=0;
+towers.forEach(function(t){if(filt!=="All"&&t.net!==filt)return;n++;var c=NETS[t.net]||NETS.Unknown;
+grp.addLayer(L.circleMarker([t.lat,t.lon],{radius:8,color:"#fff",weight:2,fillColor:c,fillOpacity:.95}).bindPopup(function(){return popupHtml(t)}));
+if(rings)ringG.addLayer(L.circle([t.lat,t.lon],{radius:t.range||1500,color:c,weight:1,fillOpacity:.06,interactive:false}))});
+map.addLayer(grp);$("count").textContent=n+" shown · "+towers.length+" total";chips()}
+function chips(){var cnt={All:towers.length};towers.forEach(function(t){cnt[t.net]=(cnt[t.net]||0)+1});
+$("chips").innerHTML=["All"].concat(Object.keys(NETS)).filter(function(n){return n==="All"||cnt[n]}).map(function(n){
+return'<button class="chip'+(n===filt?" on":"")+'" data-n="'+n+'">'+(NETS[n]?'<span class="dot" style="background:'+NETS[n]+'"></span>':"")+n+" "+(cnt[n]||0)+"</button>"}).join("");
+Array.prototype.forEach.call($("chips").children,function(b){b.onclick=function(){filt=b.dataset.n;render()}})}
+map.on("popupopen",function(e){var b=e.popup.getElement().querySelector("[data-del]");if(b)b.onclick=function(){
+towers=towers.filter(function(t){return t.id!==b.dataset.del});save();map.closePopup();render()}});
+
+/* add tower */
+function setAdd(on){addMode=on;document.body.className=on?"addmode":"";$("addb").className=on?"on":"";if(on)toast("Tap the map where the tower is")}
+$("addb").onclick=function(){setAdd(!addMode)};
+map.on("click",function(e){if(!addMode)return;
+var h='<b>New tower</b><br><select id="an">'+Object.keys(NETS).map(function(n){return"<option>"+n+"</option>"}).join("")+'</select> <select id="at"><option value="">Tech</option><option>2G</option><option>3G</option><option>4G</option><option>5G</option></select><br><input id="anote" type="text" placeholder="Note (road, landmark)" style="margin-top:6px;width:100%"><br><button class="btn p" id="aok">Add here</button>';
+var p=L.popup().setLatLng(e.latlng).setContent(h).openOn(map);
+setTimeout(function(){var ok=$("aok");if(ok)ok.onclick=function(){towers.push({id:uid(),net:$("an").value,lat:+e.latlng.lat.toFixed(6),lon:+e.latlng.lng.toFixed(6),tech:$("at").value,note:$("anote").value.slice(0,120),src:"manual"});save();map.closePopup();setAdd(false);render();toast("Tower added")}},0)});
+function uid(){return Math.random().toString(36).slice(2,10)}
+
+/* import */
+function netFrom(v,mnc){v=String(v||"").trim();if(mnc||/^\d+$/.test(v))return MNC[+v]||"Unknown";
+if(/mtn/i.test(v))return"MTN";if(/airtel|vmobile|zain|celtel/i.test(v))return"Airtel";if(/glo/i.test(v))return"Glo";if(/9mobile|etisalat/i.test(v))return"9mobile";return"Unknown"}
+function parseCSV(t){var rows=[],r=[],c="",q=false;for(var i=0;i<t.length;i++){var ch=t[i];
+if(q){if(ch==='"'){if(t[i+1]==='"'){c+='"';i++}else q=false}else c+=ch}
+else if(ch==='"')q=true;else if(ch===","){r.push(c);c=""}else if(ch==="\n"||ch==="\r"){if(ch==="\r"&&t[i+1]==="\n")i++;r.push(c);c="";if(r.length>1||r[0]!=="")rows.push(r);r=[]}else c+=ch}
+r.push(c);if(r.length>1||r[0]!=="")rows.push(r);return rows}
+function extract(text){var out=[],s=text.trim();
+if(s[0]==="{"||s[0]==="["){var j=JSON.parse(s),els=[];
+if(j.elements)j.elements.forEach(function(e){var la=e.lat!=null?e.lat:e.center&&e.center.lat,lo=e.lon!=null?e.lon:e.center&&e.center.lon,tg=e.tags||{};
+if(la!=null)out.push({lat:la,lon:lo,net:netFrom(tg.operator||tg.brand||tg.network||tg.name),note:tg.name||tg.operator||"",tech:""})});
+else{var fs=j.features||(j.type==="Feature"?[j]:[]);fs.forEach(function(f){var g=f.geometry,p=f.properties||{};if(!g)return;
+var co=g.type==="Point"?g.coordinates:g.type==="Polygon"?g.coordinates[0][0]:g.type==="LineString"?g.coordinates[0]:null;
+if(co)out.push({lat:co[1],lon:co[0],net:netFrom(p.operator||p.net||p.brand||p.name),note:p.name||p.note||"",tech:p.tech||p.radio||"",range:+p.range||0})})}
+return out}
+var rows=parseCSV(s);if(!rows.length)return out;
+var h=rows[0].map(function(x){return x.trim().toLowerCase()}),ix=function(){for(var a=0;a<arguments.length;a++){var k=h.indexOf(arguments[a]);if(k>=0)return k}return-1};
+var hasH=h.indexOf("lat")>=0||h.indexOf("latitude")>=0||h.indexOf("lon")>=0||h.indexOf("mcc")>=0;
+var iLa,iLo,iN,iT,iR,iNo,iM,mncMode=false,data=rows;
+if(hasH){data=rows.slice(1);iLa=ix("lat","latitude");iLo=ix("lon","lng","long","longitude");iM=ix("mcc");mncMode=iM>=0;iN=ix("net","operator","network","mnc");iT=ix("radio","tech");iR=ix("range");iNo=ix("note","name")}
+else if(/^(GSM|UMTS|LTE|NR|CDMA)$/i.test(rows[0][0])&&rows[0].length>=9){iM=1;mncMode=true;iN=2;iLo=6;iLa=7;iR=8;iT=0;iNo=-1}
+else{iLa=0;iLo=1;iN=-1;iT=-1;iR=-1;iNo=2;h=[]}
+data.forEach(function(r){var la=parseFloat(r[iLa]),lo=parseFloat(r[iLo]);if(isNaN(la)||isNaN(lo))return;
+if(iM>=0&&r[iM]&&+r[iM]!==621)return;
+out.push({lat:la,lon:lo,net:iN>=0?netFrom(r[iN],mncMode):"Unknown",tech:iT>=0?r[iT]:"",range:iR>=0?+r[iR]||0:0,note:iNo>=0?(r[iNo]||""):""})});
+return out}
+function ingest(text,src){var list;try{list=extract(text)}catch(e){toast("Couldn’t read that file: "+e.message);return}
+var only=$("only")&&$("only").checked,seen={};towers.forEach(function(t){seen[t.net+t.lat.toFixed(4)+t.lon.toFixed(4)]=1});
+var add=0,dup=0,out=0;
+list.forEach(function(o){if(only&&!inBB(o.lat,o.lon)){out++;return}var k=o.net+(+o.lat).toFixed(4)+(+o.lon).toFixed(4);if(seen[k]){dup++;return}seen[k]=1;
+towers.push({id:uid(),net:o.net,lat:+o.lat,lon:+o.lon,tech:o.tech||"",range:o.range||0,note:String(o.note||"").slice(0,120),src:src});add++});
+save();render();toast(add+" added"+(dup?" · "+dup+" duplicates":"")+(out?" · "+out+" outside Benin":""));
+if(add){var b=L.latLngBounds(towers.map(function(t){return[t.lat,t.lon]}));if(b.isValid())map.fitBounds(b.pad(.1),{maxZoom:15})}}
+function fetchOSM(){var b=map.getBounds(),s=b.getSouth(),w=b.getWest(),n=b.getNorth(),e=b.getEast();
+if((n-s)*(e-w)>.4){toast("Zoom in a bit first (large areas time out).");return}
+var bb="("+s+","+w+","+n+","+e+")",q='[out:json][timeout:30];(nwr["tower:type"="communication"]'+bb+';nwr["communication:mobile_phone"="yes"]'+bb+';nwr["man_made"="communications_tower"]'+bb+');out center tags;';
+toast("Asking OpenStreetMap…");
+fetch("https://overpass-api.de/api/interpreter",{method:"POST",body:"data="+encodeURIComponent(q)}).then(function(r){if(!r.ok)throw new Error("server busy, try again");return r.text()}).then(function(t){ingest(t,"OpenStreetMap")}).catch(function(e){toast("OSM fetch failed: "+e.message)})}
+
+/* export */
+function dl(name,txt,type){var a=document.createElement("a");a.href=URL.createObjectURL(new Blob([txt],{type:type}));a.download=name;document.body.appendChild(a);a.click();setTimeout(function(){URL.revokeObjectURL(a.href);a.remove()},500)}
+function expCSV(){var q=function(v){v=String(v==null?"":v);return/[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v};
+dl("benin-towers.csv","net,lat,lon,tech,range,note,src\n"+towers.map(function(t){return[t.net,t.lat,t.lon,t.tech,t.range,t.note,t.src].map(q).join(",")}).join("\n"),"text/csv")}
+function expGJ(){dl("benin-towers.geojson",JSON.stringify({type:"FeatureCollection",features:towers.map(function(t){return{type:"Feature",geometry:{type:"Point",coordinates:[t.lon,t.lat]},properties:{net:t.net,tech:t.tech,range:t.range,note:t.note,src:t.src}}})}),"application/geo+json")}
+
+/* nearby */
+function nearby(la,lo,label){nearG.clearLayers();var res=[];
+Object.keys(NETS).forEach(function(n){var best=null,bd=1e9;towers.forEach(function(t){if(t.net!==n)return;var d=km(la,lo,t.lat,t.lon);if(d<bd){bd=d;best=t}});if(best)res.push({n:n,d:bd,t:best})});
+res.sort(function(a,b){return a.d-b.d});
+res.forEach(function(r){L.polyline([[la,lo],[r.t.lat,r.t.lon]],{color:NETS[r.n],weight:3,dashArray:"4 6"}).addTo(nearG)});
+$("res").innerHTML=res.length?'<p class="mut">Closest tower per network to '+label+". Distance is a guide, not a signal measurement.</p>"+res.map(function(r,i){return'<div class="li"><span><span class="dot" style="background:'+NETS[r.n]+'"></span>'+r.n+(i===0?" · closest":"")+"</span><b>"+(r.d<1?Math.round(r.d*1000)+" m":r.d.toFixed(2)+" km")+"</b></div>"}).join(""):'<p class="mut">No towers loaded yet. Open Data to import some.</p>'}
+function locate(){if(!navigator.geolocation){toast("Location isn’t available.");return}toast("Finding you…");
+navigator.geolocation.getCurrentPosition(function(p){var la=p.coords.latitude,lo=p.coords.longitude;if(me)map.removeLayer(me);
+me=L.layerGroup([L.circle([la,lo],{radius:p.coords.accuracy,color:"#1a5fb4",weight:1,fillOpacity:.1}),L.circleMarker([la,lo],{radius:7,color:"#fff",weight:2,fillColor:"#1a5fb4",fillOpacity:1})]).addTo(map);
+map.setView([la,lo],15);nearby(la,lo,"you")},function(){toast("Couldn’t get your location.")},{timeout:10000,enableHighAccuracy:true})}
+
+/* panels */
+var P={
+near:function(){return'<div class="row"><button class="btn p" id="loc">Use my location</button><button class="btn" id="ctr">Use map center</button></div><div id="res"><p class="mut">Find which networks have a tower closest to you.</p></div>'},
+data:function(){return'<div class="row"><button class="btn p" id="osm">Fetch towers in view from OpenStreetMap</button></div>'+
+'<div class="row"><input type="file" id="file" multiple accept=".csv,.json,.geojson,.txt"></div><textarea id="paste" placeholder="Or paste CSV / GeoJSON / Overpass JSON here" spellcheck="false"></textarea>'+
+'<div class="row"><button class="btn" id="imp">Import pasted</button><label class="mut"><input type="checkbox" id="only" checked> Benin City area only</label></div>'+
+'<div class="row"><button class="btn" id="ecsv">Export CSV</button><button class="btn" id="egj">Export GeoJSON</button><button class="btn d" id="clr">Clear all</button></div>'+
+'<p class="mut">Accepts OpenCellID files (Nigeria = MCC 621), Tower Collector CSV, Overpass results, and GeoJSON. Simple CSV: net,lat,lon,note.</p>'},
+map:function(){var c={};towers.forEach(function(t){c[t.net]=(c[t.net]||0)+1});
+return'<div class="row"><label><input type="radio" name="bm" value="s" '+(map.hasLayer(street)?"checked":"")+'> Street</label><label><input type="radio" name="bm" value="a" '+(map.hasLayer(sat)?"checked":"")+'> Satellite</label></div>'+
+'<div class="row"><label><input type="checkbox" id="cl" '+(cluster?"checked":"")+'> Group nearby towers</label><label><input type="checkbox" id="rg" '+(rings?"checked":"")+'> Approx. coverage rings</label></div>'+
+'<p class="mut">'+towers.length+" towers"+(towers.length?" · about "+(towers.length/114).toFixed(2)+" per km² of built-up Benin City (114 km²)":"")+"</p>"+
+Object.keys(c).map(function(n){return'<div class="li"><span><span class="dot" style="background:'+NETS[n]+'"></span>'+n+"</span><b>"+c[n]+"</b></div>"}).join("")}};
+var cur=null;
+function openP(k){var p=$("panel");if(cur===k){p.className="";cur=null;mark();map.invalidateSize();return}
+cur=k;p.innerHTML=P[k]();p.className="open";mark();wire(k);setTimeout(function(){map.invalidateSize()},50)}
+function mark(){Array.prototype.forEach.call(document.querySelectorAll("#nav [data-p]"),function(b){b.className=b.dataset.p===cur?"on":""})}
+function wire(k){
+if(k==="near"){$("loc").onclick=locate;$("ctr").onclick=function(){var c=map.getCenter();nearby(c.lat,c.lng,"map center")}}
+if(k==="data"){$("osm").onclick=fetchOSM;$("imp").onclick=function(){var v=$("paste").value;if(v.trim()){ingest(v,"pasted");$("paste").value=""}};
+$("file").onchange=function(e){Array.prototype.forEach.call(e.target.files,function(f){var r=new FileReader();r.onload=function(){ingest(r.result,f.name)};r.readAsText(f)});e.target.value=""};
+$("ecsv").onclick=expCSV;$("egj").onclick=expGJ;$("clr").onclick=function(){if(confirm("Delete all "+towers.length+" towers from this browser?")){towers=[];save();render();nearG.clearLayers()}}}
+if(k==="map"){Array.prototype.forEach.call(document.getElementsByName("bm"),function(r){r.onchange=function(){if(r.value==="s"){map.removeLayer(sat);street.addTo(map)}else{map.removeLayer(street);sat.addTo(map)}}});
+$("cl").onchange=function(){cluster=this.checked;render()};$("rg").onchange=function(){rings=this.checked;render()}}}
+Array.prototype.forEach.call(document.querySelectorAll("#nav [data-p]"),function(b){b.onclick=function(){openP(b.dataset.p)}});
+render();
+if(!towers.length)setTimeout(function(){toast("Open Data to fetch towers from OpenStreetMap")},900);
+</script>
+</body>
+</html>
